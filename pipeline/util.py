@@ -179,7 +179,7 @@ async def list_az_cogs(
             if for_gdal:
                 bname = f'/vsiaz_streaming/{client.container_name}/{bname}'
             if for_cogeo:
-                bname = blob_client.url
+                bname = f'/vsicurl/{blob_client.url}'
             blob_url_list.append(bname)
 
         return blob_url_list
@@ -226,15 +226,24 @@ from rasterio.vrt import WarpedVRT
 import numcodecs
 
 
-def cog2zarr(src_path: str = None, var_name: str = None, dst_proj='EPSG:3857', levels=list(range(15)), ):
+def cog2zarr(src_path: str = None, var_name: str = None, dst_proj='EPSG:3857', levels=None ):
+
+
+    _, name = os.path.split(src_path)
+    n, ext = os.path.splitext(name)
+
     kwargs = locals()
+    lvls =list(range(levels))
     attrs1 = {
         'multiscales': multiscales_template(
-            datasets=[{'path': str(i)} for i in levels],
+            datasets=[{'path': str(i)} for i in lvls],
             type='reduce',
             method='cog2zarr',
             version=get_version(),
-            kwargs=kwargs,
+            kwargs={
+                    "levels": levels,
+                    "pixels_per_tile": 256
+            },
         )
     }
     attrs = get_cf_global_attrs()
@@ -259,15 +268,16 @@ def cog2zarr(src_path: str = None, var_name: str = None, dst_proj='EPSG:3857', l
             with rioxarray.open_rasterio(vrt, chunks=chunks,).to_dataset(name=var_name).squeeze().reset_coords(['band'],
                                                                                                              drop=True) as dst:
                 dst[var_name].rio.write_nodata(vrt.meta['nodata'], inplace=True)
-                dst[var_name].where(dst[var_name] == dst[var_name].rio.nodata, -1)
-                dst[var_name] = (dst[var_name] * 100).astype('i1')
-                dst[var_name].rio.write_nodata(-1, inplace=True)
+                #dst[var_name].where(dst[var_name] == dst[var_name].rio.nodata, -1)
+                #dst[var_name] = (dst[var_name] * 100).astype('<i2')
+                #dst[var_name].rio.write_nodata(-1, inplace=True)
 
                 # dst.load()
                 print(dst)
-                for level in levels:
+                for level in lvls:
                     lkey = str(level)
                     r = zooml2resmeters(zoom=level)
+                    dim = 2 ** level * 256
                     f = r / native_res
                     intf = int(round(f))
 
@@ -280,15 +290,20 @@ def cog2zarr(src_path: str = None, var_name: str = None, dst_proj='EPSG:3857', l
                         break
                     else:
 
-                        dds = dst.coarsen(x=intf, boundary='trim').mean().coarsen(y=intf, boundary='trim').mean().astype('i1')
+                        dds = dst.coarsen(x=intf, boundary='trim').mean().coarsen(y=intf, boundary='trim').mean()#.astype('<i2')
                         dds = dds.chunk({'y': src.profile['blockysize'], 'x': src.profile['blockxsize']})
                         dds[var_name].encoding.clear()
                         dds[var_name].encoding["compressor"] = compressor
-                        print(level, r, dds[var_name].shape)
+                        dds.rio.write_transform(inplace=True)
+                        #olg_gtr = dds[var_name].spatial_ref.attrs.pop('GeoTransform')
+
+                        #print(level, r, dds.spatial_ref.GeoTransform, r, dds[var_name].shape)
+                        #print(level, r,  dds[var_name].spatial_ref.attrs['GeoTransform'])
 
                         pyramid[lkey] = dds
 
-                        #oname = os.path.join('zarr', f'{level}')
+                        # oname = os.path.join('/data/hrea/', f'{n}_z{level}{ext}')
+                        # dds.rio.to_raster(oname, driver='GTiff', compute=True)
 
                         # dds.to_zarr(oname, consolidated=True)
                         #logger.info(f'Exported {oname}')
